@@ -161,16 +161,15 @@ namespace Rummy500.Core
             if (meldIndex < 0 || meldIndex >= TableMelds.Count)
                 return false;
 
-            if (RequiredMeldCard != null && !cards.Contains(RequiredMeldCard))
+            // When a player drew from the discard pile, they must lay a NEW meld —
+            // extending an existing meld does not satisfy that requirement.
+            if (RequiredMeldCard != null)
                 return false;
 
             if (!CurrentPlayer.TryExtendMeld(TableMelds[meldIndex], cards))
                 return false;
 
             HasMeldedThisTurn = true;
-            if (RequiredMeldCard != null && cards.Contains(RequiredMeldCard))
-                RequiredMeldCard = null;
-
             CheckRoundOver();
             return true;
         }
@@ -251,25 +250,16 @@ namespace Rummy500.Core
         /// </summary>
         private bool CanPlayerMeldCard(PlayerState player, Card card, int discardIndex)
 {
-    // Build full hand: current hand + card + everything above it in discard pile
+    // Build full hand: current hand + the picked card + everything above it in the discard pile.
+    // The player must be able to form a BRAND-NEW meld containing the picked card —
+    // extending an existing table meld does not count.
     var cardsFromDiscard = Deck.DiscardPile.Skip(discardIndex).ToList();
     var fullHand = player.Hand.Concat(cardsFromDiscard).ToList();
 
-    // Check for valid set (3+ same rank, different suits)
+    // Check for a valid set (3+ same rank, different suits)
     var sameRank = fullHand.Where(c => c.Rank == card.Rank).ToList();
-    if (sameRank.Count >= 3)
-    {
-        var suits = sameRank.Select(c => c.Suit).Distinct().ToList();
-        if (suits.Count >= 3) return true;
-    }
-
-    // Check if it extends any existing table meld
-    foreach (var meld in TableMelds)
-    {
-        var test = meld.Cards.Append(card).ToList();
-        if (meld.Type == MeldType.Set && Meld.IsValidSet(test)) return true;
-        if (meld.Type == MeldType.Sequence && Meld.IsValidSequence(test)) return true;
-    }
+    if (sameRank.Count >= 3 && sameRank.Select(c => c.Suit).Distinct().Count() >= 3)
+        return true;
 
     // Check normal sequence (Ace = 1, e.g. A-2-3 or 5-6-7)
     var sameSuit = fullHand.Where(c => c.Suit == card.Suit)

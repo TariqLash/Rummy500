@@ -6,8 +6,9 @@ using UnityEngine.EventSystems;
 using Rummy500.Core;
 
 /// <summary>
-/// Displays a player's hand as a fanned arc at the bottom of the screen.
-/// Supports single-card reorder drag (within hand) and multi-card external drop (meld/discard).
+/// Displays the player's hand as a fanned arc.
+/// Click to select/deselect. Drag to reorder or drop externally.
+/// Dragging a selected card moves ALL selected cards together visually.
 /// </summary>
 public class HandView : MonoBehaviour
 {
@@ -22,24 +23,32 @@ public class HandView : MonoBehaviour
     public GameObject cardPrefab;
 
     public bool CanDrag { get; set; } = true;
+    public bool flatLayout = false;
 
-    // Fired when card(s) are dropped outside the hand area.
-    // Parameters: dragged CardViews, screen drop position.
     public event Action<List<CardView>, Vector2> OnCardsDroppedExternal;
+    public event Action<bool>    OnDragStateChanged;
+    public event Action<Vector2> OnDragMoved;
 
     private List<CardView> _cardViews = new List<CardView>();
     private List<int> _selectedIndices = new List<int>();
     private List<Card> _currentHand;
 
     private int _draggingIndex = -1;
+    private int _ghostInsertIndex = -1;
     private RectTransform _draggingRT;
-    private List<RectTransform> _draggingRTs = new List<RectTransform>();
-    private List<Vector3> _draggingOffsets = new List<Vector3>();
+    private bool _draggingAllSelected;
+
+    // All RTs being moved during drag + their offsets from the primary card
+    private List<RectTransform> _draggingRTs     = new List<RectTransform>();
+    private List<Vector3>       _draggingOffsets = new List<Vector3>();
 
     public List<int> SelectedIndices => new List<int>(_selectedIndices);
-    public List<CardView> CardViews => _cardViews;
+    public List<CardView> CardViews  => _cardViews;
 
-    public void RenderHand(List<Card> hand)
+    // Cards currently being dragged (dragged card first, then selected cards); null when not dragging
+    public List<Card> CurrentDragCards { get; private set; }
+
+    public void RenderHand(List<Card> hand, Card highlightCard = null)
     {
         foreach (var cv in _cardViews)
             if (cv != null) Destroy(cv.gameObject);
@@ -49,13 +58,14 @@ public class HandView : MonoBehaviour
         _currentHand = hand;
         _draggingIndex = -1;
         _draggingRT = null;
+        _draggingAllSelected = false;
         _draggingRTs.Clear();
         _draggingOffsets.Clear();
 
         if (hand == null || hand.Count == 0) return;
 
         int count = hand.Count;
-        float angleStep = count > 1 ? Mathf.Min(fanAngleRange / (count - 1), 8f) : 0f;
+        float angleStep = count > 1 ? Mathf.Min(fanAngleRange / (count - 1), 5f) : 0f;
         float startAngle = -(angleStep * (count - 1)) / 2f;
 
         for (int i = 0; i < count; i++)
@@ -67,20 +77,30 @@ public class HandView : MonoBehaviour
             rt.pivot = new Vector2(0.5f, 0f);
             cv.Setup(hand[i]);
 
-            float angle = startAngle + i * angleStep;
-            float rad = angle * Mathf.Deg2Rad;
-            float x = Mathf.Sin(rad) * fanRadius;
-            float y = Mathf.Cos(rad) * fanRadius - fanRadius;
+            if (flatLayout)
+            {
+                float startX = -(count - 1) * cardSpacingMax / 2f;
+                cv.SetBasePosition(new Vector3(startX + i * cardSpacingMax, 0, 0));
+                rt.localRotation = Quaternion.identity;
+            }
+            else
+            {
+                float angle = startAngle + i * angleStep;
+                float rad = angle * Mathf.Deg2Rad;
+                float x = Mathf.Sin(rad) * fanRadius;
+                float y = Mathf.Cos(rad) * fanRadius - fanRadius;
+                cv.SetBasePosition(new Vector3(x, y, 0));
+                rt.localRotation = Quaternion.Euler(0, 0, -angle);
+            }
 
-            var basePos = new Vector3(x, y, 0);
-            cv.SetBasePosition(basePos);
-            rt.localRotation = Quaternion.Euler(0, 0, -angle);
+            if (highlightCard != null && hand[i] == highlightCard)
+                cv.SetHighlighted(true);
 
             int capturedIndex = i;
-            cv.OnCardClicked += _ => ToggleSelection(capturedIndex);
+            cv.OnCardClicked   += _ => ToggleSelection(capturedIndex);
             cv.OnBeginDragCard += OnCardBeginDrag;
-            cv.OnDragCard += OnCardDrag;
-            cv.OnEndDragCard += OnCardEndDrag;
+            cv.OnDragCard      += OnCardDrag;
+            cv.OnEndDragCard   += OnCardEndDrag;
 
             _cardViews.Add(cv);
         }
@@ -107,23 +127,26 @@ public class HandView : MonoBehaviour
         _selectedIndices.Clear();
     }
 
-    // --- Drag handlers ---
+    // --- Drag ---
 
     void OnCardBeginDrag(CardView cv, PointerEventData eventData)
     {
-        if (!CanDrag) return;
         _draggingIndex = _cardViews.IndexOf(cv);
         if (_draggingIndex < 0) return;
 
         _draggingRT = cv.GetComponent<RectTransform>();
+        _ghostInsertIndex = _draggingIndex;
+
         _draggingRTs.Clear();
         _draggingOffsets.Clear();
 
-        bool isDraggingSelected = _selectedIndices.Contains(_draggingIndex);
+        _draggingAllSelected = CanDrag
+            && _selectedIndices.Contains(_draggingIndex)
+            && _selectedIndices.Count > 1;
 
-        if (isDraggingSelected && _selectedIndices.Count > 1)
+        if (_draggingAllSelected)
         {
-            // Multi-card drag: move all selected cards together
+            // Move all selected cards together; offsets relative to the dragged card's position
             var primaryPos = _draggingRT.localPosition;
             foreach (int idx in _selectedIndices.OrderBy(i => i))
             {
@@ -139,11 +162,23 @@ public class HandView : MonoBehaviour
             _draggingOffsets.Add(Vector3.zero);
             _draggingRT.SetAsLastSibling();
         }
+
+        // Build CurrentDragCards: dragged card first, then any other selected cards
+        CurrentDragCards = new List<Card>();
+        if (_draggingIndex >= 0 && _draggingIndex < _cardViews.Count)
+            CurrentDragCards.Add(_cardViews[_draggingIndex].Card);
+        foreach (int idx in _selectedIndices)
+            if (idx != _draggingIndex && idx < _cardViews.Count)
+                CurrentDragCards.Add(_cardViews[idx].Card);
+
+        if (CanDrag)
+            OnDragStateChanged?.Invoke(true);
     }
 
     void OnCardDrag(CardView cv, PointerEventData eventData)
     {
         if (_draggingRT == null || _draggingRTs.Count == 0) return;
+        OnDragMoved?.Invoke(eventData.position);
 
         RectTransformUtility.ScreenPointToLocalPointInRectangle(
             (RectTransform)transform, eventData.position, eventData.pressEventCamera, out Vector2 local);
@@ -156,19 +191,26 @@ public class HandView : MonoBehaviour
             _draggingRTs[i].localPosition = primaryPos + _draggingOffsets[i];
             _draggingRTs[i].localRotation = Quaternion.Euler(0f, 0f, tilt);
         }
+
+        // Ghost reorder only makes sense when dragging a single card
+        if (_draggingRTs.Count == 1)
+            UpdateGhostPositions(local.x);
     }
 
     void OnCardEndDrag(CardView cv, PointerEventData eventData)
     {
         if (_draggingIndex < 0 || _currentHand == null) return;
 
-        bool isMultiDrag = _draggingRTs.Count > 1;
+        bool canDropExternal = CanDrag;
+
         bool insideHand = RectTransformUtility.RectangleContainsScreenPoint(
             (RectTransform)transform, eventData.position, eventData.pressEventCamera);
 
-        if (insideHand && !isMultiDrag)
+        bool needsRerender = true;
+
+        if (insideHand && !_draggingAllSelected)
         {
-            // Single card dropped within hand — reorder
+            // Reorder single card within hand
             RectTransformUtility.ScreenPointToLocalPointInRectangle(
                 (RectTransform)transform, eventData.position, eventData.pressEventCamera, out Vector2 local);
             int insertIdx = GetInsertionIndex(local.x, _draggingIndex);
@@ -179,30 +221,78 @@ public class HandView : MonoBehaviour
                 _currentHand.Insert(insertIdx, card);
             }
         }
-        else
+        else if (canDropExternal)
         {
-            // External drop — single card to discard/extend, or multi-card to lay meld
-            var draggedCards = isMultiDrag
-                ? _selectedIndices.Select(i => _cardViews[i]).ToList()
-                : new List<CardView> { cv };
-            OnCardsDroppedExternal?.Invoke(draggedCards, eventData.position);
+            // Dragged card is always first; append any selected cards that aren't the dragged one.
+            // This lets the player select some cards and drag an additional card to complete a meld,
+            // or simply drag one selected card while the rest of the selection rides along.
+            var candidates = new List<CardView> { cv };
+            foreach (int idx in _selectedIndices)
+                if (idx != _draggingIndex && idx < _cardViews.Count)
+                    candidates.Add(_cardViews[idx]);
+            OnCardsDroppedExternal?.Invoke(candidates, eventData.position);
+            needsRerender = false; // Refresh() inside the handler already re-rendered
         }
 
         _draggingIndex = -1;
         _draggingRT = null;
+        _draggingAllSelected = false;
         _draggingRTs.Clear();
         _draggingOffsets.Clear();
-        RenderHand(_currentHand);
+        CurrentDragCards = null;
+        OnDragStateChanged?.Invoke(false);
+
+        if (needsRerender)
+            RenderHand(_currentHand);
+    }
+
+    void UpdateGhostPositions(float dragX)
+    {
+        int count = _cardViews.Count;
+        if (count < 2) return;
+
+        int newGhost = GetInsertionIndex(dragX, _draggingIndex);
+        if (newGhost == _ghostInsertIndex) return;
+        _ghostInsertIndex = newGhost;
+
+        float angleStep = count > 1 ? Mathf.Min(fanAngleRange / (count - 1), 5f) : 0f;
+        float startAngle = -(angleStep * (count - 1)) / 2f;
+
+        var availableSlots = new List<int>(count - 1);
+        for (int s = 0; s < count; s++)
+            if (s != _ghostInsertIndex) availableSlots.Add(s);
+
+        int slotPtr = 0;
+        for (int i = 0; i < count; i++)
+        {
+            if (i == _draggingIndex) continue;
+
+            int slot = availableSlots[slotPtr++];
+            var rt = _cardViews[i].GetComponent<RectTransform>();
+
+            if (flatLayout)
+            {
+                float startX = -(count - 1) * cardSpacingMax / 2f;
+                rt.localPosition = new Vector3(startX + slot * cardSpacingMax, 0, 0);
+                rt.localRotation = Quaternion.identity;
+            }
+            else
+            {
+                float angle = startAngle + slot * angleStep;
+                float rad   = angle * Mathf.Deg2Rad;
+                float x     = Mathf.Sin(rad) * fanRadius;
+                float y     = Mathf.Cos(rad) * fanRadius - fanRadius;
+                rt.localPosition = new Vector3(x, y, 0);
+                rt.localRotation = Quaternion.Euler(0f, 0f, -angle);
+            }
+        }
     }
 
     int GetInsertionIndex(float dragX, int draggingIdx)
     {
         var xs = new List<float>();
         for (int i = 0; i < _cardViews.Count; i++)
-        {
-            if (i != draggingIdx)
-                xs.Add(_cardViews[i].BasePosition.x);
-        }
+            if (i != draggingIdx) xs.Add(_cardViews[i].BasePosition.x);
         xs.Sort();
 
         int pos = 0;

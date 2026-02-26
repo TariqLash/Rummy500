@@ -51,104 +51,138 @@ public class SceneSetup : MonoBehaviour
         canvasGo.GetComponent<CanvasScaler>().referenceResolution = new Vector2(1920, 1080);
         canvasGo.AddComponent<GraphicRaycaster>();
 
-        // Background
-        var bg = MakePanel(canvasGo.transform, "Background", BG, Vector2.zero, new Vector2(1, 1));
+        // Background — full screen
+        var bg = MakePanel(canvasGo.transform, "Background", BG, Vector2.zero, Vector2.one);
         bg.GetComponent<RectTransform>().anchorMin = Vector2.zero;
         bg.GetComponent<RectTransform>().anchorMax = Vector2.one;
         bg.GetComponent<RectTransform>().offsetMin = Vector2.zero;
         bg.GetComponent<RectTransform>().offsetMax = Vector2.zero;
 
-        // Table surface (slight perspective via scale/rotation trick)
-        var table = MakePanel(canvasGo.transform, "TableSurface", TableGreen,
-            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f));
-        var tableRT = table.GetComponent<RectTransform>();
-        tableRT.sizeDelta = new Vector2(1400, 700);
-        tableRT.anchoredPosition = new Vector2(0, 50);
-        // Subtle perspective skew via rotation
-        table.transform.localRotation = Quaternion.Euler(10f, 0, 0);
+        // GameArea — inset from screen edges; background shows as margin border
+        const float marginH = 250f;  // left + right
+        const float marginV = 150f;  // top + bottom
+        var gameArea = new GameObject("GameArea", typeof(RectTransform));
+        gameArea.transform.SetParent(canvasGo.transform, false);
+        var gaRT = gameArea.GetComponent<RectTransform>();
+        gaRT.anchorMin = Vector2.zero;
+        gaRT.anchorMax = Vector2.one;
+        gaRT.offsetMin = new Vector2( marginH,  marginV);
+        gaRT.offsetMax = new Vector2(-marginH, -marginV);
 
-        // Left panel — scores + info
-        var leftPanel = MakePanel(canvasGo.transform, "LeftPanel", PanelDark,
-            new Vector2(0, 0.5f), new Vector2(0, 0.5f));
-        var leftRT = leftPanel.GetComponent<RectTransform>();
-        leftRT.sizeDelta = new Vector2(220, 600);
-        leftRT.anchoredPosition = new Vector2(120, 50);
-        AddVerticalLayout(leftPanel, 10, new RectOffset(12, 12, 12, 12));
+        // ── LEFT PANEL (70%) — game area ─────────────────────────────────────
+        var leftPanel = new GameObject("LeftPanel", typeof(RectTransform), typeof(Image));
+        leftPanel.transform.SetParent(gameArea.transform, false);
+        leftPanel.GetComponent<Image>().color = TableGreen;
+        var lpRT = leftPanel.GetComponent<RectTransform>();
+        lpRT.anchorMin = Vector2.zero;
+        lpRT.anchorMax = new Vector2(0.7f, 1f);
+        lpRT.offsetMin = Vector2.zero;
+        lpRT.offsetMax = Vector2.zero;
 
-        MakeLabel(leftPanel.transform, "RUMMY 500", 20, TextLight, FontStyles.Bold);
-        MakeLabel(leftPanel.transform, "─────────────", 10, new Color(1,1,1,0.2f));
+        // ── RIGHT PANEL (30%) — info + melds ─────────────────────────────────
+        var rightPanel = new GameObject("RightPanel", typeof(RectTransform), typeof(Image));
+        rightPanel.transform.SetParent(gameArea.transform, false);
+        rightPanel.GetComponent<Image>().color = PanelDark;
+        var rpRT = rightPanel.GetComponent<RectTransform>();
+        rpRT.anchorMin = new Vector2(0.7f, 0f);
+        rpRT.anchorMax = Vector2.one;
+        rpRT.offsetMin = Vector2.zero;
+        rpRT.offsetMax = Vector2.zero;
 
-        var phaseLabel = MakeLabel(leftPanel.transform, "Phase", 13, AccentBlue);
-        phaseLabel.name = "PhaseText";
+        // Thin divider between panels
+        var divider = new GameObject("PanelDivider", typeof(RectTransform), typeof(Image));
+        divider.transform.SetParent(gameArea.transform, false);
+        divider.GetComponent<Image>().color = new Color(1f, 1f, 1f, 0.12f);
+        var dividerRT = divider.GetComponent<RectTransform>();
+        dividerRT.anchorMin = new Vector2(0.7f, 0f);
+        dividerRT.anchorMax = new Vector2(0.7f, 1f);
+        dividerRT.offsetMin = new Vector2(-1f, 0f);
+        dividerRT.offsetMax = new Vector2( 1f, 0f);
 
-        var turnLabel = MakeLabel(leftPanel.transform, "Turn", 15, TextLight, FontStyles.Bold);
-        turnLabel.name = "CurrentPlayerText";
+        // ── LEFT: Deck + Discard row at top ───────────────────────────────────
+        var deckArea = new GameObject("DeckArea", typeof(RectTransform));
+        deckArea.transform.SetParent(leftPanel.transform, false);
+        AddHorizontalLayout(deckArea, 10, new RectOffset(14, 14, 14, 14));
+        var deckAreaRT = deckArea.GetComponent<RectTransform>();
+        deckAreaRT.anchorMin        = new Vector2(0f, 1f);
+        deckAreaRT.anchorMax        = new Vector2(1f, 1f);
+        deckAreaRT.pivot            = new Vector2(0.5f, 1f);
+        deckAreaRT.sizeDelta        = new Vector2(0f, 158f);
+        deckAreaRT.anchoredPosition = Vector2.zero;
 
-        MakeLabel(leftPanel.transform, "─────────────", 10, new Color(1,1,1,0.2f));
-        MakeLabel(leftPanel.transform, "SCORES", 13, new Color(1,1,1,0.5f), FontStyles.Bold);
-
-        var scoreContainer = new GameObject("ScoreContainer", typeof(RectTransform));
-        scoreContainer.transform.SetParent(leftPanel.transform, false);
-        AddVerticalLayout(scoreContainer, 4, new RectOffset(0,0,0,0));
-        var scRT = scoreContainer.GetComponent<RectTransform>();
-        scRT.sizeDelta = new Vector2(196, 200);
-
-        var warningLabel = MakeLabel(leftPanel.transform, "", 13, new Color(1f, 0.6f, 0.2f), FontStyles.Bold);
-        warningLabel.name = "WarningText";
-        warningLabel.gameObject.SetActive(false);
-
-        // Center top — draw pile + discard pile
-        var centerTop = new GameObject("CenterTop", typeof(RectTransform));
-        centerTop.transform.SetParent(canvasGo.transform, false);
-        var ctRT = centerTop.GetComponent<RectTransform>();
-        ctRT.anchorMin = new Vector2(0.5f, 1f);
-        ctRT.anchorMax = new Vector2(0.5f, 1f);
-        ctRT.sizeDelta = new Vector2(700, 140);
-        ctRT.anchoredPosition = new Vector2(0, -160);
-        AddHorizontalLayout(centerTop, 20, new RectOffset(10, 10, 10, 10));
-
-        // Draw pile card back
-        var drawPileGo = MakeCardBack(centerTop.transform, "DrawPile", "DRAW\nPILE");
+        var drawPileGo = MakeCardBack(deckArea.transform, "DrawPile", "DRAW\nPILE");
+        drawPileGo.GetComponent<RectTransform>().sizeDelta = new Vector2(90, 130);
+        drawPileGo.AddComponent<LayoutElement>().preferredWidth = 90;
         var drawPileBtn = drawPileGo.AddComponent<Button>();
         drawPileGo.name = "DrawPileCardBack";
 
-        // Draw pile count label
-        var drawCountLabel = MakeLabel(centerTop.transform, "52", 14, TextLight);
+        var drawCountLabel = MakeLabel(deckArea.transform, "52", 13, TextLight);
         drawCountLabel.name = "DrawPileCountText";
-        drawCountLabel.GetComponent<RectTransform>().sizeDelta = new Vector2(40, 120);
+        drawCountLabel.GetComponent<RectTransform>().sizeDelta = new Vector2(32, 130);
+        drawCountLabel.AddComponent<LayoutElement>().preferredWidth = 32;
 
-        // Discard pile container
         var discardArea = new GameObject("DiscardContainer", typeof(RectTransform));
-        discardArea.transform.SetParent(centerTop.transform, false);
-        var daRT = discardArea.GetComponent<RectTransform>();
-        daRT.sizeDelta = new Vector2(400, 110);
-        AddHorizontalLayout(discardArea, -30, new RectOffset(0,0,0,0)); // overlap cards slightly
+        discardArea.transform.SetParent(deckArea.transform, false);
+        discardArea.GetComponent<RectTransform>().sizeDelta = new Vector2(800, 130);
+        var discardLE = discardArea.AddComponent<LayoutElement>();
+        discardLE.flexibleWidth = 1;   // take remaining horizontal space
+        discardLE.preferredHeight = 130;
+        AddHorizontalLayout(discardArea, -25, new RectOffset(0, 0, 0, 0));
         discardArea.name = "DiscardContainer";
 
-        // Melds area (center of table)
+        // ── LEFT: Player hand at bottom (flat, no arc) ────────────────────────
+        var handContainer = new GameObject("HandContainer", typeof(RectTransform));
+        handContainer.transform.SetParent(leftPanel.transform, false);
+        var hcRT = handContainer.GetComponent<RectTransform>();
+        hcRT.anchorMin        = new Vector2(0.5f, 0f);
+        hcRT.anchorMax        = new Vector2(0.5f, 0f);
+        hcRT.pivot            = new Vector2(0.5f, 0f);
+        hcRT.sizeDelta        = new Vector2(1200f, 170f);
+        hcRT.anchoredPosition = new Vector2(0f, 40f);   // 40px off the bottom edge
+
+        var handView = handContainer.AddComponent<HandView>();
+        handView.flatLayout    = true;
+        handView.cardSpacingMax = 70f;
+
+        // ── RIGHT: Info panel at top ──────────────────────────────────────────
+        var infoPanel = new GameObject("InfoPanel", typeof(RectTransform));
+        infoPanel.transform.SetParent(rightPanel.transform, false);
+        AddVerticalLayout(infoPanel, 5, new RectOffset(14, 14, 14, 10));
+        var ipRT = infoPanel.GetComponent<RectTransform>();
+        ipRT.anchorMin        = new Vector2(0f, 1f);
+        ipRT.anchorMax        = new Vector2(1f, 1f);
+        ipRT.pivot            = new Vector2(0.5f, 1f);
+        ipRT.sizeDelta        = new Vector2(0f, 220f);
+        ipRT.anchoredPosition = Vector2.zero;
+
+        MakeLabel(infoPanel.transform, "RUMMY 500", 13, TextLight, FontStyles.Bold);
+        var phaseLabel = MakeLabel(infoPanel.transform, "Phase", 13, AccentBlue);
+        phaseLabel.name = "PhaseText";
+        var turnLabel = MakeLabel(infoPanel.transform, "Turn", 14, TextLight, FontStyles.Bold);
+        turnLabel.name = "CurrentPlayerText";
+        MakeLabel(infoPanel.transform, "SCORES", 11, new Color(1, 1, 1, 0.5f), FontStyles.Bold);
+
+        var scoreContainer = new GameObject("ScoreContainer", typeof(RectTransform));
+        scoreContainer.transform.SetParent(infoPanel.transform, false);
+        AddVerticalLayout(scoreContainer, 2, new RectOffset(0, 0, 0, 0));
+        scoreContainer.GetComponent<RectTransform>().sizeDelta = new Vector2(0, 70);
+
+        var warningLabel = MakeLabel(infoPanel.transform, "", 12, new Color(1f, 0.6f, 0.2f), FontStyles.Bold);
+        warningLabel.name = "WarningText";
+        warningLabel.gameObject.SetActive(false);
+
+        // ── RIGHT: Melds below info, fills rest of right panel ────────────────
         var meldsArea = new GameObject("MeldsContainer", typeof(RectTransform));
-        meldsArea.transform.SetParent(canvasGo.transform, false);
+        meldsArea.transform.SetParent(rightPanel.transform, false);
+        AddVerticalLayout(meldsArea, 10, new RectOffset(10, 10, 10, 10));
         var maRT = meldsArea.GetComponent<RectTransform>();
-        maRT.anchorMin = new Vector2(0.5f, 0.5f);
-        maRT.anchorMax = new Vector2(0.5f, 0.5f);
-        maRT.sizeDelta = new Vector2(1200, 400);
-        maRT.anchoredPosition = new Vector2(0, 100);
-        AddVerticalLayout(meldsArea, 8, new RectOffset(0,0,0,0));
+        maRT.anchorMin = Vector2.zero;
+        maRT.anchorMax = Vector2.one;
+        maRT.offsetMin = Vector2.zero;
+        maRT.offsetMax = new Vector2(0f, -220f);   // leave 220px for info at top
         meldsArea.name = "MeldsContainer";
 
-        // Discard drop zone — invisible geometric target for drag-to-discard gesture
-        var discardZoneGo = new GameObject("DiscardDropZone", typeof(RectTransform), typeof(Image));
-        discardZoneGo.transform.SetParent(canvasGo.transform, false);
-        var dzImg = discardZoneGo.GetComponent<Image>();
-        dzImg.color = Color.clear;
-        dzImg.raycastTarget = false;   // transparent but geometry used for drop detection
-        var dzRT = discardZoneGo.GetComponent<RectTransform>();
-        dzRT.anchorMin = new Vector2(0.2f, 0.65f);
-        dzRT.anchorMax = new Vector2(0.8f, 1.0f);
-        dzRT.offsetMin = Vector2.zero;
-        dzRT.offsetMax = Vector2.zero;
-
-        // Game-over / round-over overlay — full-screen, shown when phase is RoundOver or GameOver
+        // ── Game-over overlay ─────────────────────────────────────────────────
         var overlay = MakePanel(canvasGo.transform, "GameOverOverlay", new Color(0f, 0f, 0f, 0.72f),
             Vector2.zero, Vector2.one);
         var overlayRT = overlay.GetComponent<RectTransform>();
@@ -161,8 +195,8 @@ public class SceneSetup : MonoBehaviour
         var overlayTxtGo = new GameObject("OverlayText", typeof(RectTransform), typeof(TextMeshProUGUI));
         overlayTxtGo.transform.SetParent(overlay.transform, false);
         var overlayTxtRT = overlayTxtGo.GetComponent<RectTransform>();
-        overlayTxtRT.anchorMin = new Vector2(0.2f, 0.35f);
-        overlayTxtRT.anchorMax = new Vector2(0.8f, 0.65f);
+        overlayTxtRT.anchorMin = new Vector2(0.1f, 0.35f);
+        overlayTxtRT.anchorMax = new Vector2(0.7f, 0.65f);
         overlayTxtRT.offsetMin = Vector2.zero;
         overlayTxtRT.offsetMax = Vector2.zero;
         var overlayTmp = overlayTxtGo.GetComponent<TextMeshProUGUI>();
@@ -174,19 +208,33 @@ public class SceneSetup : MonoBehaviour
         overlayTmp.raycastTarget = false;
         overlay.SetActive(false);
 
-        // Hand container (bottom center)
-        var handContainer = new GameObject("HandContainer", typeof(RectTransform));
-        handContainer.transform.SetParent(canvasGo.transform, false);
-        var hcRT = handContainer.GetComponent<RectTransform>();
-        hcRT.anchorMin = new Vector2(0.5f, 0f);
-        hcRT.anchorMax = new Vector2(0.5f, 0f);
-        hcRT.sizeDelta = new Vector2(900, 200);
-        hcRT.anchoredPosition = new Vector2(0, 320);
+        // ── DROP ZONES ────────────────────────────────────────────────────────
 
-        var handView = handContainer.AddComponent<HandView>();
-        handView.fanAngleRange = 40f;
-        handView.fanRadius = 700f;
-        handView.cardSpacingMax = 110f;
+        // Discard drop zone — repositioned by TableUI each render to cover the pile
+        var discardZoneGo = new GameObject("DiscardDropZone", typeof(RectTransform), typeof(Image));
+        discardZoneGo.transform.SetParent(canvasGo.transform, false);
+        var dzImg = discardZoneGo.GetComponent<Image>();
+        dzImg.color         = new Color(1f, 0.55f, 0.20f, 0.45f);
+        dzImg.raycastTarget = false;
+        var dzRT = discardZoneGo.GetComponent<RectTransform>();
+        dzRT.anchorMin = new Vector2(0.5f, 0.5f);
+        dzRT.anchorMax = new Vector2(0.5f, 0.5f);
+        dzRT.pivot     = new Vector2(0.5f, 0.5f);
+        dzRT.sizeDelta = new Vector2(494f, 158f);
+        discardZoneGo.SetActive(false);
+
+        // Meld drop zone — entire right panel below the info area
+        var meldZoneGo = new GameObject("MeldDropZone", typeof(RectTransform), typeof(Image));
+        meldZoneGo.transform.SetParent(gameArea.transform, false);
+        var mzImg = meldZoneGo.GetComponent<Image>();
+        mzImg.color         = new Color(0.18f, 0.75f, 0.35f, 0.18f);
+        mzImg.raycastTarget = false;
+        var mzRT = meldZoneGo.GetComponent<RectTransform>();
+        mzRT.anchorMin = new Vector2(0.7f, 0f);
+        mzRT.anchorMax = new Vector2(1f,   1f);
+        mzRT.offsetMin = Vector2.zero;
+        mzRT.offsetMax = new Vector2(0f, -220f);   // exclude info panel at top
+        meldZoneGo.SetActive(false);
 
         // Card prefab
         var cardPrefab = BuildCardPrefab();
@@ -206,16 +254,17 @@ public class SceneSetup : MonoBehaviour
         tableUI.discardContainer = discardArea.transform;
         tableUI.meldsContainer = meldsArea.transform;
 
-        tableUI.drawPileCardBack = drawPileGo.GetComponent<Button>();
+        tableUI.drawPileCardBack  = drawPileGo.GetComponent<Button>();
         tableUI.drawPileCountText = GameObject.Find("DrawPileCountText")?.GetComponent<TextMeshProUGUI>();
-        tableUI.phaseText = phaseLabel.GetComponent<TextMeshProUGUI>();
+        tableUI.phaseText         = phaseLabel.GetComponent<TextMeshProUGUI>();
         tableUI.currentPlayerText = turnLabel.GetComponent<TextMeshProUGUI>();
-        tableUI.warningText = warningLabel.GetComponent<TextMeshProUGUI>();
-        tableUI.scoreContainer = scoreContainer.transform;
-        tableUI.discardDropZone = dzRT;
-        tableUI.gameOverOverlay = overlay;
-        tableUI.overlayText = overlayTmp;
-        tableUI.overlayButton = overlayBtn;
+        tableUI.warningText       = warningLabel.GetComponent<TextMeshProUGUI>();
+        tableUI.scoreContainer    = scoreContainer.transform;
+        tableUI.discardDropZone   = dzRT;
+        tableUI.meldDropZone      = mzRT;
+        tableUI.gameOverOverlay   = overlay;
+        tableUI.overlayText       = overlayTmp;
+        tableUI.overlayButton     = overlayBtn;
         Debug.Log("✅ Scene built! Hit Play to start.");
     }
 
@@ -314,7 +363,7 @@ public class SceneSetup : MonoBehaviour
 
     static GameObject BuildCardPrefab()
     {
-        // Card root — wider for readability
+        // Full standard playing card
         var card = new GameObject("CardPrefab", typeof(RectTransform), typeof(Image), typeof(CardView));
         var rt = card.GetComponent<RectTransform>();
         rt.sizeDelta = new Vector2(90, 130);
@@ -331,14 +380,12 @@ public class SceneSetup : MonoBehaviour
         borderRT.offsetMin = new Vector2(-3, -3);
         borderRT.offsetMax = new Vector2(3, 3);
 
-        // Top-left rank — anchored top-left, inset from edge
+        // Top-left rank
         var topRank = new GameObject("TopRank", typeof(RectTransform), typeof(TextMeshProUGUI));
         topRank.transform.SetParent(card.transform, false);
         var trRT = topRank.GetComponent<RectTransform>();
-        trRT.anchorMin = new Vector2(0, 1);
-        trRT.anchorMax = new Vector2(0, 1);
-        trRT.pivot = new Vector2(0, 1);
-        trRT.sizeDelta = new Vector2(40, 22);
+        trRT.anchorMin = new Vector2(0, 1); trRT.anchorMax = new Vector2(0, 1);
+        trRT.pivot = new Vector2(0, 1); trRT.sizeDelta = new Vector2(40, 22);
         trRT.anchoredPosition = new Vector2(5, -5);
         var trTMP = topRank.GetComponent<TextMeshProUGUI>();
         trTMP.text = "A"; trTMP.fontSize = 16; trTMP.color = Color.black;
@@ -348,35 +395,29 @@ public class SceneSetup : MonoBehaviour
         var topSuit = new GameObject("TopSuit", typeof(RectTransform), typeof(TextMeshProUGUI));
         topSuit.transform.SetParent(card.transform, false);
         var tsRT = topSuit.GetComponent<RectTransform>();
-        tsRT.anchorMin = new Vector2(0, 1);
-        tsRT.anchorMax = new Vector2(0, 1);
-        tsRT.pivot = new Vector2(0, 1);
-        tsRT.sizeDelta = new Vector2(22, 20);
+        tsRT.anchorMin = new Vector2(0, 1); tsRT.anchorMax = new Vector2(0, 1);
+        tsRT.pivot = new Vector2(0, 1); tsRT.sizeDelta = new Vector2(22, 20);
         tsRT.anchoredPosition = new Vector2(5, -24);
         var tsTMP = topSuit.GetComponent<TextMeshProUGUI>();
         tsTMP.text = "♠"; tsTMP.fontSize = 14; tsTMP.color = Color.black;
         tsTMP.alignment = TextAlignmentOptions.TopLeft; tsTMP.raycastTarget = false;
 
-        // Center suit (large) — fill entire card
+        // Center suit (large)
         var centerSuit = new GameObject("CenterSuit", typeof(RectTransform), typeof(TextMeshProUGUI));
         centerSuit.transform.SetParent(card.transform, false);
         var csRT = centerSuit.GetComponent<RectTransform>();
-        csRT.anchorMin = Vector2.zero;
-        csRT.anchorMax = Vector2.one;
-        csRT.offsetMin = Vector2.zero;
-        csRT.offsetMax = Vector2.zero;
+        csRT.anchorMin = Vector2.zero; csRT.anchorMax = Vector2.one;
+        csRT.offsetMin = Vector2.zero; csRT.offsetMax = Vector2.zero;
         var csTMP = centerSuit.GetComponent<TextMeshProUGUI>();
         csTMP.text = "♠"; csTMP.fontSize = 40; csTMP.color = Color.black;
         csTMP.alignment = TextAlignmentOptions.Center; csTMP.raycastTarget = false;
 
-        // Bottom-right rank — anchored bottom-right
+        // Bottom-right rank
         var botRank = new GameObject("BotRank", typeof(RectTransform), typeof(TextMeshProUGUI));
         botRank.transform.SetParent(card.transform, false);
         var brRT = botRank.GetComponent<RectTransform>();
-        brRT.anchorMin = new Vector2(1, 0);
-        brRT.anchorMax = new Vector2(1, 0);
-        brRT.pivot = new Vector2(1, 0);
-        brRT.sizeDelta = new Vector2(40, 22);
+        brRT.anchorMin = new Vector2(1, 0); brRT.anchorMax = new Vector2(1, 0);
+        brRT.pivot = new Vector2(1, 0); brRT.sizeDelta = new Vector2(40, 22);
         brRT.anchoredPosition = new Vector2(-5, 5);
         var brTMP = botRank.GetComponent<TextMeshProUGUI>();
         brTMP.text = "A"; brTMP.fontSize = 16; brTMP.color = Color.black;
@@ -386,10 +427,8 @@ public class SceneSetup : MonoBehaviour
         var botSuit = new GameObject("BotSuit", typeof(RectTransform), typeof(TextMeshProUGUI));
         botSuit.transform.SetParent(card.transform, false);
         var bsRT = botSuit.GetComponent<RectTransform>();
-        bsRT.anchorMin = new Vector2(1, 0);
-        bsRT.anchorMax = new Vector2(1, 0);
-        bsRT.pivot = new Vector2(1, 0);
-        bsRT.sizeDelta = new Vector2(22, 20);
+        bsRT.anchorMin = new Vector2(1, 0); bsRT.anchorMax = new Vector2(1, 0);
+        bsRT.pivot = new Vector2(1, 0); bsRT.sizeDelta = new Vector2(22, 20);
         bsRT.anchoredPosition = new Vector2(-5, 24);
         var bsTMP = botSuit.GetComponent<TextMeshProUGUI>();
         bsTMP.text = "♠"; bsTMP.fontSize = 14; bsTMP.color = Color.black;
@@ -397,13 +436,13 @@ public class SceneSetup : MonoBehaviour
 
         // Wire CardView
         var cv = card.GetComponent<CardView>();
-        cv.cardBackground = card.GetComponent<Image>();
+        cv.cardBackground  = card.GetComponent<Image>();
         cv.selectionBorder = borderImg;
-        cv.topRankText = trTMP;
-        cv.topSuitText = tsTMP;
-        cv.centerSuitText = csTMP;
-        cv.bottomRankText = brTMP;
-        cv.bottomSuitText = bsTMP;
+        cv.topRankText     = trTMP;
+        cv.topSuitText     = tsTMP;
+        cv.centerSuitText  = csTMP;
+        cv.bottomRankText  = brTMP;
+        cv.bottomSuitText  = bsTMP;
 
         card.SetActive(true);
 var prefab = PrefabUtility.SaveAsPrefabAsset(card, "Assets/Prefabs/Card.prefab");

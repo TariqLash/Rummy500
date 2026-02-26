@@ -30,15 +30,15 @@ namespace Rummy500.Core
 
         /// <summary>
         /// Point value of the card for scoring.
-        /// Aces = 15, face cards = 10, others = face value.
+        /// Ace = 15, Ten through King = 10, Two through Nine = 5.
         /// </summary>
         public int PointValue
         {
             get
             {
-                if (Rank == Rank.Ace) return 15;
-                if (Rank >= Rank.Jack) return 10;
-                return (int)Rank;
+                if (Rank == Rank.Ace)      return 15;
+                if ((int)Rank >= 10)       return 10;  // Ten, Jack, Queen, King
+                return 5;                              // Two through Nine
             }
         }
 

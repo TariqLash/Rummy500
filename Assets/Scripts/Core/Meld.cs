@@ -38,6 +38,18 @@ namespace Rummy500.Core
         }
 
         /// <summary>
+        /// Non-destructive check: would these cards validly extend this meld?
+        /// </summary>
+        public bool CanExtend(List<Card> newCards)
+        {
+            if (newCards == null || newCards.Count == 0) return false;
+            var combined = Cards.Concat(newCards).ToList();
+            if (Type == MeldType.Set)      return IsValidSet(combined);
+            if (Type == MeldType.Sequence) return IsValidSequence(combined);
+            return false;
+        }
+
+        /// <summary>
         /// Try to extend this meld with additional cards.
         /// Returns true if all cards were validly added.
         /// </summary>

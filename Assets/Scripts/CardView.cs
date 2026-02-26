@@ -41,7 +41,9 @@ public class CardView : MonoBehaviour, IPointerClickHandler, IPointerEnterHandle
 
     private Vector3 _basePosition;
     private bool _isHovered;
+    private bool _isHighlighted;
     private RectTransform _rect;
+    private static readonly Color HighlightColor = new Color(1f, 0.94f, 0.55f);
 
     // Suit unicode symbols
     static readonly string[] SuitSymbols = { "♠", "♥", "♦", "♣" };
@@ -69,10 +71,19 @@ public void SetSelected(bool selected)
     IsSelected = selected;
     if (selectionBorder != null)
         selectionBorder.color = selected ? selectedColor : Color.clear;
-    
+    if (!selected && cardBackground)
+        cardBackground.color = _isHighlighted ? HighlightColor : normalColor;
+
     var pos = _basePosition;
     if (selected) pos.y += 30f;
     _rect.localPosition = pos;
+}
+
+public void SetHighlighted(bool highlighted)
+{
+    _isHighlighted = highlighted;
+    if (!IsSelected && cardBackground)
+        cardBackground.color = highlighted ? HighlightColor : normalColor;
 }
 
 public void SetBasePosition(Vector3 pos)
@@ -119,6 +130,6 @@ public void OnPointerEnter(PointerEventData eventData)
 public void OnPointerExit(PointerEventData eventData)
 {
     if (!IsSelected && cardBackground)
-        cardBackground.color = normalColor;
+        cardBackground.color = _isHighlighted ? HighlightColor : normalColor;
 }
 }

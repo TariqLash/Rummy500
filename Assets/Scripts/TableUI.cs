@@ -2,19 +2,17 @@ using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.UI;
-using UnityEngine.EventSystems;
 using TMPro;
 using Rummy500.Core;
 
 /// <summary>
-/// Main UI controller — gesture-only interactions:
-///   Draw from deck:    Click the draw pile card back.
-///   Draw from discard: Drag a discard pile card rightward.
-///   Discard:           Drag a hand card to the discard drop zone (top of screen).
-///   Lay meld:          Select cards in hand, drag any selected card to the melds area.
-///   Extend meld:       Drag card(s) from hand onto an existing meld row.
-///   Reorder hand:      Drag a single card left/right within the hand arc.
-///   Round/Game Over:   Tap the overlay.
+/// Main UI controller.
+///   Draw:         Click draw pile button OR click a discard card.
+///   Select cards: Click hand cards to toggle selection (for melds).
+///   Discard:      Drag 1 hand card to the discard drop zone (at the pile's next slot).
+///   Lay meld:     Select cards, drag any selected card to the meld drop zone (left-middle).
+///   Extend meld:  Same as meld — the system tries extend if lay fails.
+///   Reorder:      Drag a card within the hand arc.
 /// </summary>
 public class TableUI : MonoBehaviour
 {
@@ -33,10 +31,11 @@ public class TableUI : MonoBehaviour
     public Transform meldsContainer;
 
     [Header("Drop Zones")]
-    public RectTransform discardDropZone;   // drag hand card here to discard
+    public RectTransform discardDropZone;   // card-sized; repositioned to pile's next slot each render
+    public RectTransform meldDropZone;      // 2-card-wide; left-middle of screen
 
     [Header("Overlay")]
-    public GameObject gameOverOverlay;      // shown on RoundOver / GameOver
+    public GameObject gameOverOverlay;
     public TextMeshProUGUI overlayText;
     public Button overlayButton;
 
@@ -48,16 +47,35 @@ public class TableUI : MonoBehaviour
     public GameObject scoreRowPrefab;
 
     private List<CardView> _discardViews = new List<CardView>();
-    private List<RectTransform> _meldRowRTs = new List<RectTransform>();
+    private Card _lastDrawnCard = null;
 
-    private int _draggingDiscardIndex = -1;
-    private float _draggingDiscardStartX;
+    private Image _discardDropImage;
+    private Image _meldDropImage;
+
+    // Per-meld-row hover data
+    private List<RectTransform> _meldRowRTs     = new List<RectTransform>();
+    private List<Image>         _meldRowOverlays = new List<Image>();
+
+    private static readonly Color MeldRowExtendable = new Color(0.22f, 0.95f, 0.45f, 0.55f);
+    private static readonly Color MeldRowNormal      = new Color(0f, 0f, 0f, 0f);
+    private static readonly Color MeldNormal    = new Color(0.18f, 0.75f, 0.35f, 0.45f);
+    private static readonly Color MeldHover     = new Color(0.22f, 0.95f, 0.45f, 0.75f);
+    private static readonly Color DiscardNormal = new Color(1.00f, 0.55f, 0.20f, 0.45f);
+    private static readonly Color DiscardHover  = new Color(1.00f, 0.65f, 0.25f, 0.75f);
 
     void Start()
     {
         if (drawPileCardBack) drawPileCardBack.onClick.AddListener(OnDrawPile);
-        if (overlayButton) overlayButton.onClick.AddListener(OnOverlayClicked);
-        if (handView) handView.OnCardsDroppedExternal += OnHandCardsDropped;
+        if (overlayButton)    overlayButton.onClick.AddListener(OnOverlayClicked);
+        if (handView)
+        {
+            handView.OnCardsDroppedExternal += OnHandCardsDropped;
+            handView.OnDragStateChanged     += OnHandDragStateChanged;
+            handView.OnDragMoved            += OnHandDragMoved;
+        }
+
+        Canvas.ForceUpdateCanvases();   // ensure layout is resolved before Refresh
+        InitDropZones();
         Refresh();
     }
 
@@ -66,10 +84,10 @@ public class TableUI : MonoBehaviour
     public void Refresh()
     {
         if (GameManager.Instance == null || GameManager.Instance.Game == null) return;
-        var game = GameManager.Instance.Game;
+        var game   = GameManager.Instance.Game;
         var player = game.CurrentPlayer;
 
-        if (phaseText) phaseText.text = PhaseFriendly(game.Phase);
+        if (phaseText)         phaseText.text         = PhaseFriendly(game.Phase);
         if (currentPlayerText) currentPlayerText.text = $"{player.DisplayName}'s Turn";
 
         if (warningText)
@@ -80,17 +98,19 @@ public class TableUI : MonoBehaviour
 
         if (drawPileCountText) drawPileCountText.text = $"{game.Deck.DrawPileCount}";
 
-        bool isHumanDrawPhase = game.Phase == GamePhase.PlayerTurn_Draw && player.PlayerId == 0;
-        if (drawPileCardBack) drawPileCardBack.interactable = isHumanDrawPhase;
+        bool isHumanTurn = player.PlayerId == 0;
+        if (drawPileCardBack)
+            drawPileCardBack.interactable = isHumanTurn && game.Phase == GamePhase.PlayerTurn_Draw;
 
         RenderDiscardPile(game);
 
         var humanPlayer = game.Players.Find(p => p.PlayerId == 0);
         if (handView)
         {
-            handView.CanDrag = game.Phase == GamePhase.PlayerTurn_MeldDiscard && player.PlayerId == 0;
-            handView.RenderHand(humanPlayer?.Hand);
+            handView.CanDrag = isHumanTurn && game.Phase == GamePhase.PlayerTurn_MeldDiscard;
+            handView.RenderHand(humanPlayer?.Hand, _lastDrawnCard);
         }
+        _lastDrawnCard = null;
 
         RenderTableMelds(game);
         RenderScores(game);
@@ -124,20 +144,18 @@ public class TableUI : MonoBehaviour
         if (layout) Destroy(layout);
 
         var pile = game.Deck.DiscardPile;
-        if (pile.Count == 0) return;
 
-        float cardWidth = 90f;
-        float overlap = 20f;
-        float containerWidth = discardContainer.GetComponent<RectTransform>().sizeDelta.x;
-        float startX = -containerWidth / 2f + cardWidth / 2f;
+        float cardW  = 90f, overlap = 20f;
+        float contW  = ((RectTransform)discardContainer).sizeDelta.x;
+        float startX = -contW / 2f + cardW / 2f;
 
         bool canDraw = game.Phase == GamePhase.PlayerTurn_Draw && game.CurrentPlayer.PlayerId == 0;
 
         for (int i = 0; i < pile.Count; i++)
         {
-            float x = startX + i * overlap;
-            var go = Instantiate(cardPrefab, discardContainer);
-            var rt = go.GetComponent<RectTransform>();
+            float x  = startX + i * overlap;
+            var go   = Instantiate(cardPrefab, discardContainer);
+            var rt   = go.GetComponent<RectTransform>();
             rt.anchoredPosition = new Vector2(x, 0);
 
             var cv = go.GetComponent<CardView>();
@@ -147,47 +165,83 @@ public class TableUI : MonoBehaviour
             if (canDraw)
             {
                 int capturedIndex = i;
-                cv.OnBeginDragCard += (c, e) => OnDiscardBeginDrag(capturedIndex, e);
-                cv.OnEndDragCard += (c, e) => OnDiscardEndDrag(capturedIndex, e);
+                cv.OnCardClicked += _ => OnDiscardClicked(capturedIndex);
             }
             _discardViews.Add(cv);
+        }
+
+        // Position discard drop zone to cover the entire pile container (slightly oversized)
+        // Use a fixed size — rect.width is 0 at startup before layout runs
+        if (discardDropZone && discardContainer)
+        {
+            var contRT = (RectTransform)discardContainer;
+            discardDropZone.position  = contRT.TransformPoint(Vector3.zero);
+            discardDropZone.sizeDelta = new Vector2(494f, 130f);
         }
     }
 
     void RenderTableMelds(GameState game)
     {
         if (!meldsContainer) return;
-        _meldRowRTs.Clear();
 
         foreach (Transform child in meldsContainer)
             Destroy(child.gameObject);
+        _meldRowRTs.Clear();
+        _meldRowOverlays.Clear();
+
+        string[] rankLabels  = {"","A","2","3","4","5","6","7","8","9","10","J","Q","K"};
+        string[] suitSymbols = {"♠","♥","♦","♣"};
 
         for (int m = 0; m < game.TableMelds.Count; m++)
         {
             var meld = game.TableMelds[m];
-            var row = new GameObject($"Meld_{m}", typeof(RectTransform));
+            var row  = new GameObject($"Meld_{m}", typeof(RectTransform));
             row.transform.SetParent(meldsContainer, false);
             var rowRT = row.GetComponent<RectTransform>();
-            rowRT.sizeDelta = new Vector2(600, 100);
-            _meldRowRTs.Add(rowRT);
+            rowRT.sizeDelta = new Vector2(600, 34);
 
-            float cardW = 60f, cardH = 88f, meldOverlap = 40f;
+            // Hover overlay — covers entire row, hidden by default
+            var overlayGO = new GameObject("HoverOverlay", typeof(RectTransform), typeof(Image));
+            overlayGO.transform.SetParent(row.transform, false);
+            var overlayRT = overlayGO.GetComponent<RectTransform>();
+            overlayRT.anchorMin = Vector2.zero;
+            overlayRT.anchorMax = Vector2.one;
+            overlayRT.offsetMin = Vector2.zero;
+            overlayRT.offsetMax = Vector2.zero;
+            var overlayImg = overlayGO.GetComponent<Image>();
+            overlayImg.color         = MeldRowNormal;
+            overlayImg.raycastTarget = false;
+
+            _meldRowRTs.Add(rowRT);
+            _meldRowOverlays.Add(overlayImg);
+
+            float cardW = 38f, cardH = 28f, meldOverlap = 30f;
             float totalW = cardW + (meld.Cards.Count - 1) * meldOverlap;
             float startX = -totalW / 2f + cardW / 2f;
 
             for (int i = 0; i < meld.Cards.Count; i++)
             {
-                var go = Instantiate(cardPrefab, row.transform);
-                var rt = go.GetComponent<RectTransform>();
-                rt.sizeDelta = new Vector2(cardW, cardH);
-                rt.anchoredPosition = new Vector2(startX + i * meldOverlap, 0);
-                var cv = go.GetComponent<CardView>();
-                cv.Setup(meld.Cards[i]);
-                if (cv.topRankText) cv.topRankText.fontSize = 9;
-                if (cv.topSuitText) cv.topSuitText.fontSize = 8;
-                if (cv.centerSuitText) cv.centerSuitText.fontSize = 20;
-                if (cv.bottomRankText) cv.bottomRankText.fontSize = 9;
-                if (cv.bottomSuitText) cv.bottomSuitText.fontSize = 8;
+                var card = meld.Cards[i];
+                bool isRed = card.Suit == Suit.Hearts || card.Suit == Suit.Diamonds;
+                Color suitColor = isRed ? new Color(0.85f, 0.15f, 0.15f) : new Color(0.1f, 0.1f, 0.1f);
+
+                var tile = new GameObject($"Card_{i}", typeof(RectTransform), typeof(Image));
+                tile.transform.SetParent(row.transform, false);
+                tile.GetComponent<Image>().color = new Color(0.97f, 0.97f, 0.96f);
+                var tileRT = tile.GetComponent<RectTransform>();
+                tileRT.sizeDelta        = new Vector2(cardW, cardH);
+                tileRT.anchoredPosition = new Vector2(startX + i * meldOverlap, 0);
+
+                var lbl = new GameObject("Label", typeof(RectTransform), typeof(TextMeshProUGUI));
+                lbl.transform.SetParent(tile.transform, false);
+                var lblRT = lbl.GetComponent<RectTransform>();
+                lblRT.anchorMin = Vector2.zero; lblRT.anchorMax = Vector2.one;
+                lblRT.offsetMin = new Vector2(2, 1); lblRT.offsetMax = new Vector2(-2, -1);
+                var lblTMP = lbl.GetComponent<TextMeshProUGUI>();
+                lblTMP.text = rankLabels[(int)card.Rank] + suitSymbols[(int)card.Suit];
+                lblTMP.fontSize = 14; lblTMP.color = suitColor;
+                lblTMP.alignment = TextAlignmentOptions.Center;
+                lblTMP.raycastTarget = false;
             }
         }
     }
@@ -195,8 +249,7 @@ public class TableUI : MonoBehaviour
     void RenderScores(GameState game)
     {
         if (!scoreContainer) return;
-        foreach (Transform child in scoreContainer)
-            Destroy(child.gameObject);
+        foreach (Transform child in scoreContainer) Destroy(child.gameObject);
 
         foreach (var p in game.Players)
         {
@@ -214,135 +267,234 @@ public class TableUI : MonoBehaviour
                 var t = row.GetComponent<TextMeshProUGUI>();
                 t.text = $"{p.DisplayName}: {p.Score} / 500";
                 t.fontSize = 16;
-                t.color = Color.white;
+                t.color    = Color.white;
             }
         }
     }
 
-    // --- Discard pile drag: draw from discard ---
+    // --- Drop zone setup ---
 
-    void OnDiscardBeginDrag(int index, PointerEventData e)
+    void InitDropZones()
     {
-        _draggingDiscardIndex = index;
-        _draggingDiscardStartX = e.position.x;
+        if (discardDropZone)
+        {
+            _discardDropImage = discardDropZone.GetComponent<Image>();
+            if (!_discardDropImage)
+            {
+                _discardDropImage = discardDropZone.gameObject.AddComponent<Image>();
+            }
+            _discardDropImage.color        = DiscardNormal;
+            _discardDropImage.raycastTarget = false;
+            EnsureZoneLabel(discardDropZone, "Discard");
+            discardDropZone.gameObject.SetActive(false);
+        }
+
+        if (meldDropZone)
+        {
+            _meldDropImage = meldDropZone.GetComponent<Image>();
+            if (!_meldDropImage)
+            {
+                _meldDropImage = meldDropZone.gameObject.AddComponent<Image>();
+            }
+            _meldDropImage.color        = MeldNormal;
+            _meldDropImage.raycastTarget = false;
+            EnsureZoneLabel(meldDropZone, "Lay Meld");
+            meldDropZone.gameObject.SetActive(false);
+        }
     }
 
-    void OnDiscardEndDrag(int index, PointerEventData e)
+    void EnsureZoneLabel(RectTransform zone, string text)
     {
-        if (_draggingDiscardIndex < 0 || index != _draggingDiscardIndex)
-        {
-            _draggingDiscardIndex = -1;
-            return;
-        }
-        float dragDelta = e.position.x - _draggingDiscardStartX;
-        if (dragDelta > 50f)
-        {
-            if (GameManager.Instance.DrawFromDiscard(_draggingDiscardIndex))
-                Refresh();
-        }
-        _draggingDiscardIndex = -1;
+        var existing = zone.GetComponentInChildren<TextMeshProUGUI>();
+        if (existing) { existing.text = text; return; }
+
+        var lbl   = new GameObject("ZoneLabel", typeof(RectTransform), typeof(TextMeshProUGUI));
+        lbl.transform.SetParent(zone, false);
+        var lblRT = lbl.GetComponent<RectTransform>();
+        lblRT.anchorMin = Vector2.zero;
+        lblRT.anchorMax = Vector2.one;
+        lblRT.offsetMin = Vector2.zero;
+        lblRT.offsetMax = Vector2.zero;
+        var tmp = lbl.GetComponent<TextMeshProUGUI>();
+        tmp.text          = text;
+        tmp.fontSize      = 13;
+        tmp.color         = new Color(1f, 1f, 1f, 0.80f);
+        tmp.alignment     = TextAlignmentOptions.Center;
+        tmp.fontStyle     = FontStyles.Bold;
+        tmp.raycastTarget = false;
     }
 
-    // --- Hand external drop: discard / lay meld / extend meld ---
+    // --- Drag state handlers ---
+
+    void OnHandDragStateChanged(bool dragging)
+    {
+        var game   = GameManager.Instance?.Game;
+        bool active = dragging
+            && game?.Phase == GamePhase.PlayerTurn_MeldDiscard
+            && game?.CurrentPlayer.PlayerId == 0;
+
+        if (discardDropZone) discardDropZone.gameObject.SetActive(active);
+        if (meldDropZone)    meldDropZone.gameObject.SetActive(active);
+
+        if (dragging && meldDropZone)
+        {
+            // +1 for the dragged card itself (which may not be in SelectedIndices)
+            int count = handView ? handView.SelectedIndices.Count + 1 : 1;
+            string countLabel = count >= 3 ? $"Lay Meld ({count})" : $"Lay Meld\nNeed {3 - count} more";
+            EnsureZoneLabel(meldDropZone, countLabel);
+        }
+        else if (!dragging)
+        {
+            if (_discardDropImage) _discardDropImage.color = DiscardNormal;
+            if (_meldDropImage)    _meldDropImage.color    = MeldNormal;
+            if (meldDropZone) EnsureZoneLabel(meldDropZone, "Lay Meld");
+            foreach (var img in _meldRowOverlays) if (img) img.color = MeldRowNormal;
+        }
+    }
+
+    void OnHandDragMoved(Vector2 screenPos)
+    {
+        if (_discardDropImage && discardDropZone)
+            _discardDropImage.color = RectTransformUtility.RectangleContainsScreenPoint(
+                discardDropZone, screenPos, null) ? DiscardHover : DiscardNormal;
+
+        if (_meldDropImage && meldDropZone)
+            _meldDropImage.color = RectTransformUtility.RectangleContainsScreenPoint(
+                meldDropZone, screenPos, null) ? MeldHover : MeldNormal;
+
+        // Highlight individual meld rows if dragged cards can extend them
+        var game      = GameManager.Instance?.Game;
+        var dragCards = handView ? handView.CurrentDragCards : null;
+        for (int m = 0; m < _meldRowRTs.Count && m < _meldRowOverlays.Count; m++)
+        {
+            bool hovering  = RectTransformUtility.RectangleContainsScreenPoint(_meldRowRTs[m], screenPos, null);
+            bool canExtend = dragCards != null && dragCards.Count > 0
+                             && game != null && m < game.TableMelds.Count
+                             && game.TableMelds[m].CanExtend(dragCards);
+            _meldRowOverlays[m].color = (hovering && canExtend) ? MeldRowExtendable : MeldRowNormal;
+        }
+    }
+
+    // --- Drop handler ---
 
     void OnHandCardsDropped(List<CardView> draggedCards, Vector2 screenPos)
     {
         var game = GameManager.Instance.Game;
         if (game.Phase != GamePhase.PlayerTurn_MeldDiscard || game.CurrentPlayer.PlayerId != 0)
-        {
-            Refresh();
-            return;
-        }
+        { Refresh(); return; }
 
-        var hand = game.CurrentPlayer.Hand;
-        var handIndices = draggedCards
-            .Select(cv => hand.IndexOf(cv.Card))
-            .Where(i => i >= 0)
+        // Extract Card objects directly — no index round-trip
+        var hand  = game.CurrentPlayer.Hand;
+        var cards = draggedCards
+            .Select(cv => cv.Card)
+            .Where(c => c != null && hand.Contains(c))
             .ToList();
 
-        if (handIndices.Count == 0) { Refresh(); return; }
+        if (cards.Count == 0) { Refresh(); return; }
 
-        // 1. Discard zone
+        // Discard zone — always discard only the dragged card (cards[0]), ignore selection
         if (discardDropZone && RectTransformUtility.RectangleContainsScreenPoint(discardDropZone, screenPos, null))
         {
-            if (handIndices.Count == 1)
-            {
-                if (!GameManager.Instance.Discard(handIndices[0]))
-                    ShowWarning("Can't discard that card — must meld it first.");
-            }
-            else
-                ShowWarning("Select exactly 1 card to discard.");
+            if (!game.TryDiscard(0, cards[0]))
+                ShowWarning("Can't discard — meld the drawn card first.");
             Refresh();
             return;
         }
 
-        // 2. Specific meld row (extend)
+        // Meld zone — try lay new meld, then try extending any existing meld
+        // Checked BEFORE meld rows because the zone can overlap a row visually
+        if (meldDropZone && RectTransformUtility.RectangleContainsScreenPoint(meldDropZone, screenPos, null))
+        {
+            if (cards.Count < 2)
+            {
+                ShowWarning("Select cards first, then drag to Lay Meld.");
+                Refresh();
+                return;
+            }
+            Debug.Log($"[Meld] Trying: {string.Join(", ", cards)}  IsValidSet={Meld.IsValidSet(cards)}  IsValidSeq={Meld.IsValidSequence(cards)}");
+
+            if (game.TryLayMeld(0, cards))
+            {
+                handView.ClearSelection();
+                Refresh();
+                return;
+            }
+            for (int m = 0; m < game.TableMelds.Count; m++)
+            {
+                if (game.TryExtendMeld(0, m, cards))
+                {
+                    handView.ClearSelection();
+                    Refresh();
+                    return;
+                }
+            }
+            ShowWarning("Not a valid meld.");
+            Refresh();
+            return;
+        }
+
+        // Drop directly on a meld row (outside the meld zone) — extend that specific meld
         for (int m = 0; m < _meldRowRTs.Count; m++)
         {
-            if (_meldRowRTs[m] && RectTransformUtility.RectangleContainsScreenPoint(_meldRowRTs[m], screenPos, null))
+            if (RectTransformUtility.RectangleContainsScreenPoint(_meldRowRTs[m], screenPos, null))
             {
-                if (!GameManager.Instance.ExtendMeld(m, handIndices))
-                    ShowWarning("Can't extend that meld with those cards.");
+                if (m < game.TableMelds.Count && game.TryExtendMeld(0, m, cards))
+                {
+                    handView.ClearSelection();
+                    Refresh();
+                    return;
+                }
+                ShowWarning("Can't extend that meld.");
                 Refresh();
                 return;
             }
         }
 
-        // 3. Melds container (lay new meld)
-        var meldsRT = meldsContainer?.GetComponent<RectTransform>();
-        if (meldsRT && RectTransformUtility.RectangleContainsScreenPoint(meldsRT, screenPos, null))
-        {
-            if (!GameManager.Instance.LayMeld(handIndices))
-                ShowWarning("That's not a valid meld.");
-            Refresh();
-            return;
-        }
-
-        // Dropped nowhere meaningful — snap back
+        // Dropped nowhere — snap back
         Refresh();
     }
 
-    // --- Draw pile button ---
+    // --- Draw ---
 
     void OnDrawPile()
     {
         if (GameManager.Instance.DrawFromPile())
+        {
+            _lastDrawnCard = GameManager.Instance.Game.CurrentPlayer.Hand[0];
             Refresh();
+        }
     }
 
-    // --- Overlay: round over / game over ---
+    void OnDiscardClicked(int index)
+    {
+        if (GameManager.Instance.DrawFromDiscard(index))
+        {
+            _lastDrawnCard = GameManager.Instance.Game.CurrentPlayer.Hand[0];
+            Refresh();
+        }
+    }
+
+    // --- Overlay ---
 
     void OnOverlayClicked()
     {
         var game = GameManager.Instance.Game;
-        if (game.Phase == GamePhase.RoundOver)
-        {
-            GameManager.Instance.StartNextRound();
-            Refresh();
-        }
-        else if (game.Phase == GamePhase.GameOver)
-        {
-            GameManager.Instance.StartNewGame();
-            Refresh();
-        }
+        if      (game.Phase == GamePhase.RoundOver) { GameManager.Instance.StartNextRound(); Refresh(); }
+        else if (game.Phase == GamePhase.GameOver)  { GameManager.Instance.StartNewGame();   Refresh(); }
     }
 
     void ShowWarning(string msg)
     {
-        if (warningText)
-        {
-            warningText.text = msg;
-            warningText.gameObject.SetActive(true);
-        }
+        if (warningText) { warningText.text = msg; warningText.gameObject.SetActive(true); }
         Debug.LogWarning(msg);
     }
 
     string PhaseFriendly(GamePhase phase) => phase switch
     {
-        GamePhase.PlayerTurn_Draw => "Draw a card",
+        GamePhase.PlayerTurn_Draw        => "Draw a card",
         GamePhase.PlayerTurn_MeldDiscard => "Meld or Discard",
-        GamePhase.RoundOver => "Round Over",
-        GamePhase.GameOver => "Game Over!",
-        _ => phase.ToString()
+        GamePhase.RoundOver              => "Round Over",
+        GamePhase.GameOver               => "Game Over!",
+        _                                => phase.ToString()
     };
 }

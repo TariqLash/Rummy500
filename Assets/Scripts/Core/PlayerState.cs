@@ -25,8 +25,8 @@ namespace Rummy500.Core
             DisplayName = displayName;
         }
 
-        public void AddCardToHand(Card card) => Hand.Add(card);
-        public void AddCardsToHand(IEnumerable<Card> cards) => Hand.AddRange(cards);
+        public void AddCardToHand(Card card) => Hand.Insert(0, card);
+        public void AddCardsToHand(IEnumerable<Card> cards) => Hand.InsertRange(0, cards.ToList());
 
         public bool RemoveCardFromHand(Card card) => Hand.Remove(card);
 
