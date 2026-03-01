@@ -18,6 +18,7 @@ namespace Rummy500.Core
         public MeldType Type { get; private set; }
         public int OwnerId { get; private set; }       // Player index who created it
         public List<Card> Cards { get; private set; }
+        public List<int> CardOwners { get; private set; } // Per-card contributor (parallel to Cards)
 
         public int PointValue => Cards.Sum(c => c.PointValue);
 
@@ -27,14 +28,25 @@ namespace Rummy500.Core
         {
             if (!IsValidSet(cards))
                 throw new ArgumentException("Invalid set.");
-            return new Meld { Type = MeldType.Set, OwnerId = ownerId, Cards = new List<Card>(cards) };
+            return new Meld
+            {
+                Type = MeldType.Set, OwnerId = ownerId,
+                Cards = new List<Card>(cards),
+                CardOwners = Enumerable.Repeat(ownerId, cards.Count).ToList()
+            };
         }
 
         public static Meld CreateSequence(int ownerId, List<Card> cards)
         {
             if (!IsValidSequence(cards))
                 throw new ArgumentException("Invalid sequence.");
-            return new Meld { Type = MeldType.Sequence, OwnerId = ownerId, Cards = SortByRank(cards) };
+            var sorted = SortByRank(cards);
+            return new Meld
+            {
+                Type = MeldType.Sequence, OwnerId = ownerId,
+                Cards = sorted,
+                CardOwners = Enumerable.Repeat(ownerId, sorted.Count).ToList()
+            };
         }
 
         /// <summary>
@@ -53,18 +65,23 @@ namespace Rummy500.Core
         /// Try to extend this meld with additional cards.
         /// Returns true if all cards were validly added.
         /// </summary>
-        public bool TryExtend(List<Card> newCards)
+        public bool TryExtend(List<Card> newCards, int extenderId)
         {
             var combined = Cards.Concat(newCards).ToList();
 
             if (Type == MeldType.Set && IsValidSet(combined))
             {
                 Cards = combined;
+                CardOwners = CardOwners.Concat(Enumerable.Repeat(extenderId, newCards.Count)).ToList();
                 return true;
             }
             if (Type == MeldType.Sequence && IsValidSequence(combined))
             {
-                Cards = SortByRank(combined);
+                var allOwners = CardOwners.Concat(Enumerable.Repeat(extenderId, newCards.Count)).ToList();
+                var pairs = combined.Zip(allOwners, (c, o) => (c, o))
+                                    .OrderBy(p => (int)p.c.Rank).ToList();
+                Cards      = pairs.Select(p => p.c).ToList();
+                CardOwners = pairs.Select(p => p.o).ToList();
                 return true;
             }
             return false;

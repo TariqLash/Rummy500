@@ -40,6 +40,20 @@ namespace Rummy500.Core
         public PlayerState CurrentPlayer => Players[CurrentPlayerIndex];
         public bool IsGameOver => Players.Any(p => p.Score >= ScoreTarget);
 
+        // --- Match modifiers ---
+        public List<MatchModifier> ActiveModifiers { get; private set; } = new List<MatchModifier>();
+
+        // --- Relics ---
+        private Dictionary<int, List<RelicId>> _playerRelics = new Dictionary<int, List<RelicId>>();
+
+        private bool PlayerHasRelic(int playerId, RelicId relic) =>
+            _playerRelics.TryGetValue(playerId, out var relics) && relics.Contains(relic);
+        /// <summary>The starting discard card when CursedCard modifier is active. Null otherwise.</summary>
+        public Card CursedCard { get; private set; } = null;
+        /// <summary>Total turns taken this round (increments once per player turn).</summary>
+        public int TurnCount { get; private set; } = 0;
+        public const int SpeedRoundTurnLimit = 10;
+
         // Events
         public event Action<PlayerState> OnTurnChanged;
         public event Action<PlayerState, Meld> OnMeldLaid;
@@ -60,11 +74,18 @@ namespace Rummy500.Core
             Players.Add(new PlayerState(id, name));
         }
 
-        public void StartGame(int seed = -1)
+        /// <summary>Call before StartGame to apply relics accumulated during the run.</summary>
+        public void SetRelics(Dictionary<int, List<RelicId>> relics)
+        {
+            _playerRelics = relics ?? new Dictionary<int, List<RelicId>>();
+        }
+
+        public void StartGame(int seed = -1, List<MatchModifier> modifiers = null)
         {
             if (Players.Count < 2 || Players.Count > 4)
                 throw new InvalidOperationException("Need 2–4 players.");
 
+            ActiveModifiers = modifiers ?? new List<MatchModifier>();
             Deck = new Deck(seed);
             StartRound();
         }
@@ -75,6 +96,7 @@ namespace Rummy500.Core
             TableMelds.Clear();
             foreach (var p in Players)
             {
+                p.CaptureScoreForRound();
                 p.Hand.Clear();
                 p.Melds.Clear();
             }
@@ -84,6 +106,16 @@ namespace Rummy500.Core
 
             var hands = Players.Select(p => p.Hand).ToList();
             Deck.Deal(hands, CardsPerPlayer);
+
+            // Loaded relic: deal one extra card to each player who has it
+            foreach (var p in Players)
+                if (PlayerHasRelic(p.PlayerId, RelicId.Loaded))
+                    p.AddCardToHand(Deck.DrawFromPile());
+
+            // CursedCard: designate the starting discard card as cursed for this round.
+            // It's visible to all players from the start, adding strategic tension.
+            CursedCard = ActiveModifiers.Contains(MatchModifier.CursedCard) ? Deck.TopDiscard : null;
+            TurnCount  = 0;
 
             CurrentPlayerIndex = 0;
             SetPhase(GamePhase.PlayerTurn_Draw);
@@ -116,14 +148,19 @@ namespace Rummy500.Core
             if (discardIndex < 0 || discardIndex >= Deck.DiscardPileCount)
                 return false;
 
-            var pickedCard = Deck.DiscardPile[discardIndex];
-            Debug.Log($"Can meld {pickedCard}? {CanPlayerMeldCard(CurrentPlayer, pickedCard, discardIndex)}");
-            if (!CanPlayerMeldCard(CurrentPlayer, pickedCard, discardIndex))
-                return false;
+            var pickedCard  = Deck.DiscardPile[discardIndex];
+            bool isScavenger = PlayerHasRelic(playerId, RelicId.Scavenger);
+
+            if (!isScavenger)
+            {
+                Debug.Log($"Can meld {pickedCard}? {CanPlayerMeldCard(CurrentPlayer, pickedCard, discardIndex)}");
+                if (!CanPlayerMeldCard(CurrentPlayer, pickedCard, discardIndex))
+                    return false;
+            }
 
             var cards = Deck.DrawFromDiscard(discardIndex);
             CurrentPlayer.AddCardsToHand(cards);
-            RequiredMeldCard = pickedCard;
+            RequiredMeldCard = isScavenger ? null : pickedCard;
             HasMeldedThisTurn = false;
             SetPhase(GamePhase.PlayerTurn_MeldDiscard);
             return true;
@@ -148,6 +185,13 @@ namespace Rummy500.Core
             if (RequiredMeldCard != null && cards.Contains(RequiredMeldCard))
                 RequiredMeldCard = null;
 
+            // Relic: SetSpecialist / RunSpecialist — bonus per card in matching meld type
+            int pid = CurrentPlayer.PlayerId;
+            if (meld.Type == MeldType.Set && PlayerHasRelic(pid, RelicId.SetSpecialist))
+                CurrentPlayer.AddRelicBonus(meld.Cards.Count * 3);
+            else if (meld.Type == MeldType.Sequence && PlayerHasRelic(pid, RelicId.RunSpecialist))
+                CurrentPlayer.AddRelicBonus(meld.Cards.Count * 3);
+
             OnMeldLaid?.Invoke(CurrentPlayer, meld);
             CheckRoundOver();
             return true;
@@ -166,8 +210,16 @@ namespace Rummy500.Core
             if (RequiredMeldCard != null)
                 return false;
 
-            if (!CurrentPlayer.TryExtendMeld(TableMelds[meldIndex], cards))
+            // Player must have laid at least one meld of their own before extending
+            if (CurrentPlayer.Melds.Count == 0)
                 return false;
+
+            if (!CurrentPlayer.TryExtendMeld(TableMelds[meldIndex], cards, CurrentPlayer.PlayerId))
+                return false;
+
+            // Relic: Extender — bonus each time you extend any meld
+            if (PlayerHasRelic(CurrentPlayer.PlayerId, RelicId.Extender))
+                CurrentPlayer.AddRelicBonus(5);
 
             HasMeldedThisTurn = true;
             CheckRoundOver();
@@ -210,28 +262,95 @@ namespace Rummy500.Core
         private void EndRound(PlayerState winner)
         {
             foreach (var p in Players)
-                p.ApplyRoundScore(p == winner);
-
-            SetPhase(GamePhase.RoundOver);
-            OnRoundOver?.Invoke(winner);
-
-            if (Players.Any(p => p.Score >= ScoreTarget))
             {
-                var gameWinner = Players.OrderByDescending(p => p.Score).First();
-                SetPhase(GamePhase.GameOver);
-                OnGameOver?.Invoke(gameWinner);
+                bool wentOut  = winner != null && p == winner;
+                int meldedPts = p.Melds.Sum(m => m.Cards.Sum(c => GetCardPoints(c)));
+                int handPts   = p.Hand.Sum(c => GetHandPenalty(c, p.PlayerId));
+
+                // CursedCard: holding the cursed card at round end adds a 25-pt penalty
+                if (!wentOut && CursedCard != null && p.Hand.Contains(CursedCard))
+                    handPts += 25;
+
+                // Relic: SafetyNet — hand penalty halved
+                if (!wentOut && PlayerHasRelic(p.PlayerId, RelicId.SafetyNet))
+                    handPts = handPts / 2;
+
+                // Relic: Insurance — hand penalty capped at 30
+                if (!wentOut && PlayerHasRelic(p.PlayerId, RelicId.Insurance))
+                    handPts = System.Math.Min(handPts, 30);
+
+                // Relic: ExitBonus — bonus when you go out
+                if (wentOut && PlayerHasRelic(p.PlayerId, RelicId.ExitBonus))
+                    p.AddRelicBonus(20);
+
+                // Relic: Tempo — bonus for going out fast (within 4 total player-turns)
+                if (wentOut && TurnCount <= 4 && PlayerHasRelic(p.PlayerId, RelicId.Tempo))
+                    p.AddRelicBonus(20);
+
+                // Relic: RoyalTreatment — +5 per J/Q/K in your laid melds
+                if (PlayerHasRelic(p.PlayerId, RelicId.RoyalTreatment))
+                {
+                    int royals = p.Melds.Sum(m => m.Cards.Count(c => (int)c.Rank >= 11));
+                    p.AddRelicBonus(royals * 5);
+                }
+
+                // Relic: AceKicker — +10 per Ace in your laid melds
+                if (PlayerHasRelic(p.PlayerId, RelicId.AceKicker))
+                {
+                    int aces = p.Melds.Sum(m => m.Cards.Count(c => c.Rank == Rank.Ace));
+                    p.AddRelicBonus(aces * 10);
+                }
+
+                p.ApplyRoundScore(wentOut, meldedPts, handPts);
             }
+
+            // One round = one match. Go straight to GameOver — no multi-round loop.
+            OnRoundOver?.Invoke(winner);
+            var gameWinner = Players.OrderByDescending(p => p.Score).First();
+            SetPhase(GamePhase.GameOver);
+            OnGameOver?.Invoke(gameWinner);
         }
 
-        public void StartNextRound()
+        /// <summary>
+        /// Returns the point value of a card for scoring laid melds, applying match modifiers.
+        /// HotDeck: J/Q/K worth double (20 pts instead of 10).
+        /// </summary>
+        private int GetCardPoints(Card c)
         {
-            if (Phase != GamePhase.RoundOver)
-                throw new InvalidOperationException("Not in RoundOver phase.");
-            StartRound();
+            int pts = c.PointValue;
+            if (ActiveModifiers.Contains(MatchModifier.HotDeck) && (int)c.Rank >= 11)
+                pts *= 2;
+            return pts;
         }
+
+        /// <summary>
+        /// Returns the hand-penalty value of a card for a specific player, applying relics.
+        /// DeadwoodCutter: cards ranked 2–5 count as 0.
+        /// </summary>
+        private int GetHandPenalty(Card c, int playerId)
+        {
+            if (PlayerHasRelic(playerId, RelicId.DeadwoodCutter)
+                && (int)c.Rank >= 2 && (int)c.Rank <= 5)
+                return 0;
+            int pts = c.PointValue;
+            if (ActiveModifiers.Contains(MatchModifier.HotDeck) && (int)c.Rank >= 11)
+                pts *= 2;
+            return pts;
+        }
+
 
         private void AdvanceTurn()
         {
+            TurnCount++;
+
+            // SpeedRound: force-end the round when the turn limit is hit.
+            // Nobody gets the "went out" bonus — everyone scores melds minus hand.
+            if (ActiveModifiers.Contains(MatchModifier.SpeedRound) && TurnCount >= SpeedRoundTurnLimit)
+            {
+                EndRound(null);
+                return;
+            }
+
             CurrentPlayerIndex = (CurrentPlayerIndex + 1) % Players.Count;
             RequiredMeldCard = null;
             HasMeldedThisTurn = false;
@@ -249,41 +368,60 @@ namespace Rummy500.Core
         /// Used to validate discard pile draws.
         /// </summary>
         private bool CanPlayerMeldCard(PlayerState player, Card card, int discardIndex)
-{
-    // Build full hand: current hand + the picked card + everything above it in the discard pile.
-    // The player must be able to form a BRAND-NEW meld containing the picked card —
-    // extending an existing table meld does not count.
-    var cardsFromDiscard = Deck.DiscardPile.Skip(discardIndex).ToList();
-    var fullHand = player.Hand.Concat(cardsFromDiscard).ToList();
+        {
+            // Build full hand: current hand + the picked card + everything above it in the discard pile.
+            // The meld must contain the picked card AND at least one card from the player's actual hand —
+            // the player cannot take cards that form a meld entirely from the pile without contributing.
+            var cardsFromDiscard = Deck.DiscardPile.Skip(discardIndex).ToList();
+            var fullHand = player.Hand.Concat(cardsFromDiscard).ToList();
 
-    // Check for a valid set (3+ same rank, different suits)
-    var sameRank = fullHand.Where(c => c.Rank == card.Rank).ToList();
-    if (sameRank.Count >= 3 && sameRank.Select(c => c.Suit).Distinct().Count() >= 3)
-        return true;
+            // A valid meld requires at least 3 cards, so the player must have at least 4 total
+            // after drawing — 3 to meld the required card, and 1 left over to discard.
+            if (fullHand.Count < 4)
+                return false;
 
-    // Check normal sequence (Ace = 1, e.g. A-2-3 or 5-6-7)
-    var sameSuit = fullHand.Where(c => c.Suit == card.Suit)
-                           .OrderBy(c => (int)c.Rank)
-                           .ToList();
-    for (int i = 0; i <= sameSuit.Count - 3; i++)
-    {
-        var subset = sameSuit.Skip(i).Take(3).ToList();
-        if (Meld.IsValidSequence(subset) && subset.Contains(card))
-            return true;
-    }
+            // Check for a valid set (3+ same rank, different suits, ≥1 from player's hand)
+            var sameRank = fullHand.Where(c => c.Rank == card.Rank).ToList();
+            if (sameRank.Count >= 3
+                && sameRank.Select(c => c.Suit).Distinct().Count() >= 3
+                && sameRank.Any(c => player.Hand.Contains(c)))
+                return true;
 
-    // Check wraparound sequence (Ace = 14, e.g. Q-K-A)
-    var sameSuitWrapped = fullHand.Where(c => c.Suit == card.Suit)
-                                  .OrderBy(c => c.Rank == Rank.Ace ? 14 : (int)c.Rank)
-                                  .ToList();
-    for (int i = 0; i <= sameSuitWrapped.Count - 3; i++)
-    {
-        var subset = sameSuitWrapped.Skip(i).Take(3).ToList();
-        if (Meld.IsValidSequence(subset) && subset.Contains(card))
-            return true;
-    }
+            // Check normal sequence (Ace = 1), ≥1 card from player's hand.
+            // Try all window sizes (3..N) so that e.g. [7♥ 8♥ 9♥ 10♥] is found
+            // even when the 3-card sub-window [7♥ 8♥ 9♥] has no hand card.
+            var sameSuit = fullHand.Where(c => c.Suit == card.Suit)
+                                   .OrderBy(c => (int)c.Rank)
+                                   .ToList();
+            for (int len = 3; len <= sameSuit.Count; len++)
+            {
+                for (int i = 0; i <= sameSuit.Count - len; i++)
+                {
+                    var subset = sameSuit.Skip(i).Take(len).ToList();
+                    if (Meld.IsValidSequence(subset)
+                        && subset.Contains(card)
+                        && subset.Any(c => player.Hand.Contains(c)))
+                        return true;
+                }
+            }
 
-    return false;
-}
+            // Check wraparound sequence (Ace = 14, e.g. Q-K-A), ≥1 from player's hand
+            var sameSuitWrapped = fullHand.Where(c => c.Suit == card.Suit)
+                                          .OrderBy(c => c.Rank == Rank.Ace ? 14 : (int)c.Rank)
+                                          .ToList();
+            for (int len = 3; len <= sameSuitWrapped.Count; len++)
+            {
+                for (int i = 0; i <= sameSuitWrapped.Count - len; i++)
+                {
+                    var subset = sameSuitWrapped.Skip(i).Take(len).ToList();
+                    if (Meld.IsValidSequence(subset)
+                        && subset.Contains(card)
+                        && subset.Any(c => player.Hand.Contains(c)))
+                        return true;
+                }
+            }
+
+            return false;
+        }
     }
 }

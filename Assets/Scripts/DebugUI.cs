@@ -124,21 +124,6 @@ public class DebugUI : MonoBehaviour
             }
         }
 
-        // Round over
-        if (game.Phase == GamePhase.RoundOver)
-        {
-            GUILayout.Space(10);
-            GUILayout.Label("--- ROUND OVER ---", HeaderStyle());
-            foreach (var p in game.Players)
-                GUILayout.Label($"  {p.DisplayName}: {p.Score} pts");
-            if (GUILayout.Button("Start Next Round"))
-            {
-                GameManager.Instance.StartNextRound();
-                _selectedHandIndices.Clear();
-                _selectedMeldIndex = -1;
-            }
-        }
-
         // Game over
         if (game.Phase == GamePhase.GameOver)
         {

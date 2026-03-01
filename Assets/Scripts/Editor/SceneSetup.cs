@@ -13,7 +13,7 @@ public class SceneSetup : MonoBehaviour
 {
     // Color palette — clean modern dark theme
     static Color BG          = new Color(0.08f, 0.11f, 0.14f);   // near-black blue
-    static Color TableGreen  = new Color(0.10f, 0.22f, 0.18f);   // dark teal felt
+    static Color TableGreen  = new Color(0.28f, 0.60f, 0.18f);   // lawn green
     static Color CardWhite   = new Color(0.97f, 0.97f, 0.96f);
     static Color AccentBlue  = new Color(0.25f, 0.55f, 0.95f);
     static Color AccentGreen = new Color(0.18f, 0.75f, 0.45f);
@@ -47,8 +47,10 @@ public class SceneSetup : MonoBehaviour
         var canvasGo = new GameObject("Canvas");
         var canvas = canvasGo.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        canvasGo.AddComponent<CanvasScaler>().uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        canvasGo.GetComponent<CanvasScaler>().referenceResolution = new Vector2(1920, 1080);
+        var scaler = canvasGo.AddComponent<CanvasScaler>();
+        scaler.uiScaleMode         = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+        scaler.referenceResolution = new Vector2(1920, 1080);
+        scaler.matchWidthOrHeight  = 0.5f;   // balance width + height so nothing clips
         canvasGo.AddComponent<GraphicRaycaster>();
 
         // Background — full screen
@@ -141,8 +143,7 @@ public class SceneSetup : MonoBehaviour
         hcRT.anchoredPosition = new Vector2(0f, 40f);   // 40px off the bottom edge
 
         var handView = handContainer.AddComponent<HandView>();
-        handView.flatLayout    = true;
-        handView.cardSpacingMax = 70f;
+        handView.cardSpacingMax = 160f;
 
         // ── RIGHT: Info panel at top ──────────────────────────────────────────
         var infoPanel = new GameObject("InfoPanel", typeof(RectTransform));
@@ -154,6 +155,7 @@ public class SceneSetup : MonoBehaviour
         ipRT.pivot            = new Vector2(0.5f, 1f);
         ipRT.sizeDelta        = new Vector2(0f, 220f);
         ipRT.anchoredPosition = Vector2.zero;
+        infoPanel.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
 
         MakeLabel(infoPanel.transform, "RUMMY 500", 13, TextLight, FontStyles.Bold);
         var phaseLabel = MakeLabel(infoPanel.transform, "Phase", 13, AccentBlue);
@@ -166,6 +168,7 @@ public class SceneSetup : MonoBehaviour
         scoreContainer.transform.SetParent(infoPanel.transform, false);
         AddVerticalLayout(scoreContainer, 2, new RectOffset(0, 0, 0, 0));
         scoreContainer.GetComponent<RectTransform>().sizeDelta = new Vector2(0, 70);
+        scoreContainer.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
 
         var warningLabel = MakeLabel(infoPanel.transform, "", 12, new Color(1f, 0.6f, 0.2f), FontStyles.Bold);
         warningLabel.name = "WarningText";
@@ -214,7 +217,7 @@ public class SceneSetup : MonoBehaviour
         var discardZoneGo = new GameObject("DiscardDropZone", typeof(RectTransform), typeof(Image));
         discardZoneGo.transform.SetParent(canvasGo.transform, false);
         var dzImg = discardZoneGo.GetComponent<Image>();
-        dzImg.color         = new Color(1f, 0.55f, 0.20f, 0.45f);
+        dzImg.color         = Color.clear;
         dzImg.raycastTarget = false;
         var dzRT = discardZoneGo.GetComponent<RectTransform>();
         dzRT.anchorMin = new Vector2(0.5f, 0.5f);
@@ -223,17 +226,18 @@ public class SceneSetup : MonoBehaviour
         dzRT.sizeDelta = new Vector2(494f, 158f);
         discardZoneGo.SetActive(false);
 
-        // Meld drop zone — entire right panel below the info area
+        // Meld drop zone — compact card-sized zone, centre-left of screen
         var meldZoneGo = new GameObject("MeldDropZone", typeof(RectTransform), typeof(Image));
         meldZoneGo.transform.SetParent(gameArea.transform, false);
         var mzImg = meldZoneGo.GetComponent<Image>();
-        mzImg.color         = new Color(0.18f, 0.75f, 0.35f, 0.18f);
+        mzImg.color         = Color.clear;
         mzImg.raycastTarget = false;
         var mzRT = meldZoneGo.GetComponent<RectTransform>();
-        mzRT.anchorMin = new Vector2(0.7f, 0f);
-        mzRT.anchorMax = new Vector2(1f,   1f);
-        mzRT.offsetMin = Vector2.zero;
-        mzRT.offsetMax = new Vector2(0f, -220f);   // exclude info panel at top
+        mzRT.anchorMin        = new Vector2(0.5f, 0.5f);
+        mzRT.anchorMax        = new Vector2(0.5f, 0.5f);
+        mzRT.pivot            = new Vector2(0.5f, 0.5f);
+        mzRT.sizeDelta        = new Vector2(150f, 202f);
+        mzRT.anchoredPosition = new Vector2(-200f, 0f);
         meldZoneGo.SetActive(false);
 
         // Card prefab

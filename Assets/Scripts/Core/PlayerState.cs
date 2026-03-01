@@ -12,12 +12,17 @@ namespace Rummy500.Core
         public List<Card> Hand { get; private set; } = new List<Card>();
         public List<Meld> Melds { get; private set; } = new List<Meld>();
         public int Score { get; private set; } = 0;
+        public int ScoreBeforeRound { get; private set; } = 0;
 
         // Points currently on the table (laid melds this game)
         public int MeldedPoints => Melds.Sum(m => m.PointValue);
 
         // Points still in hand (penalty if someone else goes out)
         public int HandPoints => Hand.Sum(c => c.PointValue);
+
+        // Bonus points accumulated this round from relic effects (meld bonuses, extension bonuses, etc.)
+        public int RelicBonus { get; private set; } = 0;
+        public void AddRelicBonus(int pts) => RelicBonus += pts;
 
         public PlayerState(int playerId, string displayName)
         {
@@ -61,10 +66,10 @@ namespace Rummy500.Core
         /// <summary>
         /// Add cards from hand onto an existing meld (any player's meld on the table).
         /// </summary>
-        public bool TryExtendMeld(Meld targetMeld, List<Card> cards)
+        public bool TryExtendMeld(Meld targetMeld, List<Card> cards, int extenderId)
         {
             if (!RemoveCardsFromHand(cards)) return false;
-            if (!targetMeld.TryExtend(cards))
+            if (!targetMeld.TryExtend(cards, extenderId))
             {
                 // Rollback
                 AddCardsToHand(cards);
@@ -76,11 +81,15 @@ namespace Rummy500.Core
         /// <summary>
         /// Called at the end of a round. Adds melded points, subtracts hand points.
         /// </summary>
-        public void ApplyRoundScore(bool wentOut)
+        public void CaptureScoreForRound() { ScoreBeforeRound = Score; RelicBonus = 0; }
+
+        /// <summary>
+        /// Apply end-of-round scoring. Caller supplies the point values so modifiers
+        /// (HotDeck, CursedCard penalties, etc.) can be applied before this is called.
+        /// </summary>
+        public void ApplyRoundScore(bool wentOut, int meldedPts, int handPts)
         {
-            int gained = MeldedPoints;
-            int penalty = wentOut ? 0 : HandPoints;
-            Score += gained - penalty;
+            Score += meldedPts - (wentOut ? 0 : handPts) + RelicBonus;
         }
 
         public bool HasCard(Card card) => Hand.Contains(card);

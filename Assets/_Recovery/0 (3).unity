@@ -1456,6 +1456,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: cceafd25a815b4924a447ba2ac63d6bf, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::GameManager
+  playerCount: 2
 --- !u!4 &521309588
 Transform:
   m_ObjectHideFlags: 0

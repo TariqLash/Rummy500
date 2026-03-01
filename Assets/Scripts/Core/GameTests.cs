@@ -132,11 +132,11 @@ public static class GameTests
         var meld = Meld.CreateSequence(0, seqCards);
 
         var extension = new List<Card> { new Card(Suit.Spades, Rank.Seven) };
-        Assert("Can extend sequence with next rank", meld.TryExtend(extension));
+        Assert("Can extend sequence with next rank", meld.TryExtend(extension, 0));
         Assert("Meld now has 4 cards", meld.Cards.Count == 4);
 
         var badExtension = new List<Card> { new Card(Suit.Spades, Rank.Nine) };
-        Assert("Cannot extend sequence with non-consecutive rank", !meld.TryExtend(badExtension));
+        Assert("Cannot extend sequence with non-consecutive rank", !meld.TryExtend(badExtension, 0));
     }
 
     static void Test_GameFlow_BasicTurn()
@@ -184,7 +184,7 @@ public static class GameTests
         Assert("Melded points = 30", player.MeldedPoints == 30);
         Assert("Hand points = 10", player.HandPoints == 10);
 
-        player.ApplyRoundScore(false);
+        player.ApplyRoundScore(false, player.MeldedPoints, player.HandPoints);
         Assert("Score = 30 - 10 = 20", player.Score == 20);
     }
 

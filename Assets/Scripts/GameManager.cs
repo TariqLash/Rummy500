@@ -14,10 +14,10 @@ public class GameManager : MonoBehaviour
 
     public GameState Game { get; private set; }
 
-    // How many human players (rest will be skipped for now)
-    [SerializeField] private int playerCount = 2;
-
     private Coroutine _aiCoroutine;
+
+    public RunState RunState            { get; private set; }
+    public bool     LastMatchWonByHuman { get; private set; }
 
     void Awake()
     {
@@ -31,10 +31,16 @@ public class GameManager : MonoBehaviour
 
     void Start()
     {
-        StartNewGame();
+        StartRun();
     }
 
-    public void StartNewGame()
+    public void StartRun()
+    {
+        RunState = new RunState();   // no lives — score to 500
+        StartMatch();
+    }
+
+    private void StartMatch()
     {
         if (_aiCoroutine != null)
         {
@@ -43,19 +49,57 @@ public class GameManager : MonoBehaviour
         }
 
         Game = new GameState(scoreTarget: 500);
+        Game.AddPlayer(0, "You");
+        Game.AddPlayer(1, "Opponent");
 
-        for (int i = 0; i < playerCount; i++)
-            Game.AddPlayer(i, i == 0 ? "You" : $"Player {i + 1}");
+        // Apply relics accumulated during this run
+        Game.SetRelics(RunState.GetAllRelics());
 
         Game.OnTurnChanged += OnTurnChanged;
-        Game.OnMeldLaid += (p, m) => Debug.Log($"{p.DisplayName} laid: {m}");
-        Game.OnRoundOver += p => Debug.Log($"Round over! {p.DisplayName} went out. Scores: {GetScoreSummary()}");
-        Game.OnGameOver += p => Debug.Log($"GAME OVER! {p.DisplayName} wins with {p.Score} points!");
+        Game.OnMeldLaid    += (p, m) => Debug.Log($"{p.DisplayName} laid: {m}");
+        Game.OnRoundOver   += p => Debug.Log($"Round over! {p?.DisplayName ?? "nobody"} went out. Scores: {GetScoreSummary()}");
+        Game.OnGameOver    += OnMatchOver;
 
         Game.StartGame();
-        Debug.Log("Game started! It's your turn.");
+        Debug.Log($"Round {RunState.RoundNumber} — Relics: You={string.Join(",", RunState.GetRelics(0))} Opp={string.Join(",", RunState.GetRelics(1))}");
         LogGameState();
     }
+
+    private void OnMatchOver(PlayerState winner)
+    {
+        LastMatchWonByHuman = winner.PlayerId == 0;
+        RunState.OnMatchComplete(Game.Players);
+
+        var run = RunState;
+        Debug.Log(run.IsRunComplete
+            ? $"Run complete! Scores: {GetScoreSummary()}"
+            : $"Round over. Cumulative — You: {run.GetScore(0)}  Opponent: {run.GetScore(1)}");
+
+        // Offer a relic to the round winner (unless run is complete)
+        if (winner != null && !run.IsRunComplete)
+        {
+            run.OfferRelicChoice(winner.PlayerId);
+
+            // AI picks automatically (first offered choice)
+            if (winner.PlayerId != 0 && run.PendingRelicChoices.Count > 0)
+            {
+                var pick = run.PendingRelicChoices[0];
+                run.AcceptRelic(winner.PlayerId, pick);
+                Debug.Log($"Opponent auto-picked relic: {RelicPool.All[pick].Name}");
+            }
+        }
+
+        FindAnyObjectByType<TableUI>()?.Refresh();
+    }
+
+    public void AcceptRelicPick(RelicId relic)
+    {
+        RunState.AcceptRelic(0, relic);
+    }
+
+    public void AdvanceToNextMatch() => StartMatch();
+    public void RetryMatch()         => StartMatch(); // kept for compatibility
+    public void StartNewGame()       => StartRun(); // kept for any external references
 
     private void OnTurnChanged(PlayerState player)
     {
@@ -191,13 +235,6 @@ public class GameManager : MonoBehaviour
         if (ok) LogGameState();
         else Debug.LogWarning("Can't discard right now — did you draw from the discard pile without melding that card?");
         return ok;
-    }
-
-    public void StartNextRound()
-    {
-        Game.StartNextRound();
-        Debug.Log("New round started!");
-        LogGameState();
     }
 
     // --- Helpers ---
